@@ -105,7 +105,8 @@ function responder_(p) {
   if (nombre.length < 3) return { ok: false, codigo: 'nombre' };
   if (op === 'representante' && rep.length < 3) return { ok: false, codigo: 'representante' };
 
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
+  const lock = LockService.getScriptLock(); lock.waitLock(30000);
+  let hecho;
   try {
     const b = base_(), sh = b.sh;
     // 1) Ubicar la fila: la que mandó la app, si el nombre sigue siendo el mismo; si no, por nombre exacto.
@@ -136,10 +137,13 @@ function responder_(p) {
     if (b.c.repCargo >= 0) sh.getRange(fila, b.c.repCargo + 1).setValue(op === 'representante' ? seguro_(repCargo) : '');
     if (b.c.fecha >= 0) sh.getRange(fila, b.c.fecha + 1).setValue(ahora).setNumberFormat('dd/MM/yyyy HH:mm');
     SpreadsheetApp.flush();
-    const esp = espejo_(datosEspejo_(b, fila, nombre, nuevo ? { cargo: p.cargo, inst: p.inst } : null, op, rep, repCargo, previo));
-    registro_([ahora, fila, seguro_(nombre), estado, op === 'representante' ? seguro_(rep) : '', op === 'representante' ? seguro_(repCargo) : '', nuevo ? 'Sí' : '', limpio_(p.disp).slice(0, 20), esp]);
-    return { ok: true, estado: op, nuevo, fecha: Utilities.formatDate(ahora, 'America/La_Paz', 'dd/MM/yyyy HH:mm') };
+    hecho = { b, fila, nuevo, previo, estado, ahora };
   } finally { lock.releaseLock(); }
+  // 3) Fuera del candado: copia en la planilla original y REGISTRO (si la original demora, no frena a nadie).
+  const h = hecho;
+  const esp = espejo_(datosEspejo_(h.b, h.fila, nombre, h.nuevo ? { cargo: p.cargo, inst: p.inst } : null, op, rep, repCargo, h.previo));
+  try { registro_([h.ahora, h.fila, seguro_(nombre), h.estado, op === 'representante' ? seguro_(rep) : '', op === 'representante' ? seguro_(repCargo) : '', h.nuevo ? 'Sí' : '', limpio_(p.disp).slice(0, 20), esp]); } catch (e) {}
+  return { ok: true, estado: op, nuevo: h.nuevo, fecha: Utilities.formatDate(h.ahora, 'America/La_Paz', 'dd/MM/yyyy HH:mm') };
 }
 
 // ─────────────────────────── Utilidades de la base ───────────────────────────
