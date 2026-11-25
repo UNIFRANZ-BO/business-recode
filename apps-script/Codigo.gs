@@ -8,6 +8,7 @@ const VERSION = '1.1';
 // Planilla original del equipo: cada respuesta se copia también ahí (columnas «Confirmación de Asistencia» y
 // «Representante Designado»), cruzando por nombre. Si falla, la respuesta igual queda guardada en esta hoja.
 const ORIGINAL = { id: '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes', hoja: 'Lista de Invitados' };
+const NOTA_REP = 'Representante (vía app): ';
 const HOJA_BASE = 'BASE INVITADOS';           // si cambias el nombre de la pestaña, cámbialo aquí
 const H = { RESUMEN: 'RESUMEN', REGISTRO: 'REGISTRO' };
 const MAX_NUEVOS = 60;                        // tope de personas que se registran solas («No encuentro mi nombre»)
@@ -348,7 +349,8 @@ function espejo_(d) {
     const lc = sh.getLastColumn(), lr = sh.getLastRow();
     const enc = sh.getRange(1, 1, 1, lc).getValues()[0].map(norm_);
     const col = alias => { for (const a of alias) { const k = enc.indexOf(norm_(a)); if (k >= 0) return k; } return -1; };
-    const c = { nombre: col(COLS.nombre), cargo: col(COLS.cargo), inst: col(COLS.inst), estado: col(COLS.estado), rep: col(['representante designado', 'representante']) };
+    // Ojo: en la original, «Representante Designado» (J) es el responsable de Unifranz (lista desplegable): NO se toca.
+    const c = { nombre: col(COLS.nombre), cargo: col(COLS.cargo), inst: col(COLS.inst), estado: col(COLS.estado) };
     if (c.nombre < 0 || c.estado < 0) return 'Error: no encuentro las columnas de nombre o confirmación';
     const v = lr > 1 ? sh.getRange(2, 1, lr - 1, lc).getValues() : [];
     const idx = []; v.forEach((f, i) => { if (norm_(f[c.nombre]) === norm_(d.nombre)) idx.push(i); });
@@ -360,13 +362,13 @@ function espejo_(d) {
     }
     const fila = i + 2;
     const estado = d.op === 'pendiente' ? textoEstadoPendiente_(sh, c.estado) : textoEstado_(sh, c.estado, d.op);
-    sh.getRange(fila, c.estado + 1).setValue(estado);
-    if (c.rep >= 0) {
-      const actual = norm_(v[i][c.rep]);
-      if (d.op === 'representante') sh.getRange(fila, c.rep + 1).setValue(seguro_(textoRep_(d.rep, d.repCargo)));
-      // Solo borra el representante si lo había puesto la app (no toca lo que el equipo escribió a mano).
-      else if (actual && (actual === norm_(textoRep_(d.previo.rep, d.previo.repCargo)) || actual === norm_(d.previo.rep))) sh.getRange(fila, c.rep + 1).clearContent();
-    }
+    const celda = sh.getRange(fila, c.estado + 1);
+    celda.setValue(estado);
+    // El representante del invitado va como NOTA en la celda de confirmación (no hay columna libre para eso).
+    const nota = String(celda.getNote() || '');
+    if (d.op === 'representante') celda.setNote(NOTA_REP + textoRep_(d.rep, d.repCargo));
+    else if (nota.indexOf(NOTA_REP) === 0) celda.setNote('');           // solo borra la nota que puso la app
+    SpreadsheetApp.flush();                                             // si la hoja rechaza algo, se captura aquí
     return 'OK · fila ' + fila;
   } catch (e) { return 'Error: ' + String(e && e.message || e).slice(0, 200); }
 }

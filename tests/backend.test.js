@@ -21,7 +21,8 @@ function hoja(nombre, datos) {
         setFormula(f) { fil(r); sh.d[r - 1][c - 1] = f === '=SUM(2' + SEP + '5)' ? 7 : f; if (/^=/.test(f) && f !== '=SUM(2,5)' && f !== '=SUM(2;5)') sh.formulas = (sh.formulas || []).concat(f); return rg; },
         clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (sh.d[r - 1 + i]) sh.d[r - 1 + i][c - 1 + j] = ''; return rg; },
         getDataValidation: () => ({ getCriteriaType: () => 'VALUE_IN_LIST', getCriteriaValues: () => [OPS] }),
-        copyTo() {}, setBackground(b) { sh.fondo[r + ',' + c] = b; return rg; }
+        copyTo() {}, setBackground(b) { sh.fondo[r + ',' + c] = b; return rg; },
+        getNote() { return (sh.notas || {})[r + ',' + c] || ''; }, setNote(t) { (sh.notas = sh.notas || {})[r + ',' + c] = t; return rg; }
       };
       ['setFontColor', 'setFontWeight', 'setVerticalAlignment', 'setWrap', 'setNumberFormat', 'setFontSize'].forEach(k => rg[k] = () => rg);
       return rg;
@@ -106,19 +107,21 @@ assert.strictEqual(hojas.REGISTRO.getLastRow(), 1 + 5, 'REGISTRO con 5 respuesta
 // ── Copia en la planilla original ──
 assert.strictEqual(orig.d[2][8], 'Confirmado', 'Laredo confirmado en la original (col I)');
 assert.strictEqual(orig.d[3][8], 'No Asistirá', 'Brañez: no asistirá en la original');
-assert.strictEqual(orig.d[3][9], '', 'el representante que puso la app se borra al cambiar a «no asistirá»');
+assert.strictEqual(orig.d[3][9], 'Puesto a mano', 'la columna J (responsable de Unifranz) nunca se toca');
+assert.strictEqual(orig.getRange(4, 9).getNote(), '', 'la nota de representante se borra al cambiar a «no asistirá»');
 assert.strictEqual(orig.d[5][8], 'Confirmado', 'María Laredo (1.ª aparición) en la original');
 assert.strictEqual(orig.d[6][8], '', '2.ª aparición intacta');
 assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'No encontrado en la planilla original'), 'nuevo invitado: anotado como no encontrado');
 assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'OK · fila 3'));
 // representante → J; luego confirma → J se borra solo si lo puso la app
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'representante', rep: 'Ana Pérez', rcargo: 'Asesora' }); assert.ok(x.ok);
-assert.strictEqual(orig.d[4][8], 'Enviará representate'); assert.strictEqual(orig.d[4][9], 'Ana Pérez (Asesora)');
+assert.strictEqual(orig.d[4][8], 'Enviará representate'); assert.strictEqual(orig.d[4][9], '', 'J intacta');
+assert.strictEqual(orig.getRange(5, 9).getNote(), 'Representante (vía app): Ana Pérez (Asesora)');
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'confirmado' }); assert.ok(x.ok);
-assert.strictEqual(orig.d[4][8], 'Confirmado'); assert.strictEqual(orig.d[4][9], '', 'J borrado porque lo había puesto la app');
-orig.d[4][9] = 'Escrito a mano';
+assert.strictEqual(orig.d[4][8], 'Confirmado'); assert.strictEqual(orig.getRange(5, 9).getNote(), '', 'nota borrada porque la había puesto la app');
+orig.getRange(5, 9).setNote('Nota del equipo');
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'confirmado' }); assert.ok(x.ok);
-assert.strictEqual(orig.d[4][9], 'Escrito a mano', 'no borra lo que el equipo escribió a mano');
+assert.strictEqual(orig.getRange(5, 9).getNote(), 'Nota del equipo', 'no borra notas del equipo');
 // si la planilla original falla, la respuesta igual se guarda
 originalFalla = true;
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'no_asistira' }); assert.ok(x.ok); assert.strictEqual(base.d[3][5], 'No Asistirá');
