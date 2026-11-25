@@ -1,11 +1,13 @@
-/** @OnlyCurrentDoc */
 // ════════════════════════════════════════════════════════════════════════════
 //  BUSINESS RECODE · Confirmación de asistencia — UNIFRANZ Cochabamba
 //  Va pegado en la hoja «INVITADOS BUSSINES RECODE» (Extensiones → Apps Script).
 //  Implementar como aplicación web: Ejecutar como «Yo» · Acceso «Cualquier persona».
 //  Para actualizar: Implementar → Administrar implementaciones → ✏️ → Nueva versión.
 // ════════════════════════════════════════════════════════════════════════════
-const VERSION = '1.0';
+const VERSION = '1.1';
+// Planilla original del equipo: cada respuesta se copia también ahí (columnas «Confirmación de Asistencia» y
+// «Representante Designado»), cruzando por nombre. Si falla, la respuesta igual queda guardada en esta hoja.
+const ORIGINAL = { id: '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes', hoja: 'Lista de Invitados' };
 const HOJA_BASE = 'BASE INVITADOS';           // si cambias el nombre de la pestaña, cámbialo aquí
 const H = { RESUMEN: 'RESUMEN', REGISTRO: 'REGISTRO' };
 const MAX_NUEVOS = 60;                        // tope de personas que se registran solas («No encuentro mi nombre»)
@@ -119,12 +121,15 @@ function responder_(p) {
       nuevo = true;
     }
     // 2) Escribir estado (exactamente como figura en la lista desplegable), representante y fecha.
+    const previo = nuevo ? {} : { rep: b.c.rep >= 0 ? b.filas[fila - 2][b.c.rep] : '', repCargo: b.c.repCargo >= 0 ? b.filas[fila - 2][b.c.repCargo] : '' };
     const estado = textoEstado_(sh, b.c.estado, op), ahora = new Date();
     sh.getRange(fila, b.c.estado + 1).setValue(estado);
     if (b.c.rep >= 0) sh.getRange(fila, b.c.rep + 1).setValue(op === 'representante' ? seguro_(rep) : '');
     if (b.c.repCargo >= 0) sh.getRange(fila, b.c.repCargo + 1).setValue(op === 'representante' ? seguro_(repCargo) : '');
     if (b.c.fecha >= 0) sh.getRange(fila, b.c.fecha + 1).setValue(ahora).setNumberFormat('dd/MM/yyyy HH:mm');
-    registro_([ahora, fila, seguro_(nombre), estado, op === 'representante' ? seguro_(rep) : '', op === 'representante' ? seguro_(repCargo) : '', nuevo ? 'Sí' : '', limpio_(p.disp).slice(0, 20)]);
+    SpreadsheetApp.flush();
+    const esp = espejo_(datosEspejo_(b, fila, nombre, nuevo ? { cargo: p.cargo, inst: p.inst } : null, op, rep, repCargo, previo));
+    registro_([ahora, fila, seguro_(nombre), estado, op === 'representante' ? seguro_(rep) : '', op === 'representante' ? seguro_(repCargo) : '', nuevo ? 'Sí' : '', limpio_(p.disp).slice(0, 20), esp]);
     return { ok: true, estado: op, nuevo, fecha: Utilities.formatDate(ahora, 'America/La_Paz', 'dd/MM/yyyy HH:mm') };
   } finally { lock.releaseLock(); }
 }
@@ -175,12 +180,13 @@ function textoEstado_(sh, colEstado, op) {
 }
 function registro_(fila) {
   const sh = SpreadsheetApp.getActive().getSheetByName(H.REGISTRO) || hojaRegistro_();
+  if (String(sh.getRange(1, 9).getValue()) !== 'Planilla original') { sh.getRange(1, 9).setValue('Planilla original'); encabezado_(sh.getRange(1, 9)); sh.setColumnWidth(9, 260); }
   sh.appendRow(fila);
   sh.getRange(sh.getLastRow(), 1).setNumberFormat('dd/MM/yyyy HH:mm:ss');
 }
 function hojaRegistro_() {
   const sh = SpreadsheetApp.getActive().insertSheet(H.REGISTRO);
-  const enc = ['Fecha y hora', 'Fila en la base', 'Nombre', 'Respuesta', 'Representante', 'Cargo del representante', '¿Nuevo?', 'Dispositivo'];
+  const enc = ['Fecha y hora', 'Fila en la base', 'Nombre', 'Respuesta', 'Representante', 'Cargo del representante', '¿Nuevo?', 'Dispositivo', 'Planilla original'];
   sh.getRange(1, 1, 1, enc.length).setValues([enc]);
   encabezado_(sh.getRange(1, 1, 1, enc.length));
   sh.setFrozenRows(1); sh.setColumnWidth(3, 260); sh.setColumnWidth(5, 220); sh.setColumnWidth(6, 200);
@@ -203,6 +209,7 @@ function onOpen() {
       .addSeparator()
       .addItem('Reiniciar la respuesta de la fila seleccionada', 'reiniciarFila')
       .addItem('Reconstruir RESUMEN', 'reconstruirResumen')
+      .addItem('Copiar respuestas a la planilla original', 'sincronizarOriginal')
       .addToUi();
   } catch (e) {}
 }
@@ -306,11 +313,68 @@ function reiniciarFila() {
   const nombre = sh.getRange(fila, b.c.nombre + 1).getValue();
   const ui = SpreadsheetApp.getUi();
   if (ui.alert('Reiniciar respuesta', '¿Dejar como «Pendiente» a ' + nombre + ' (fila ' + fila + ') y borrar su representante?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  const previo = { rep: b.c.rep >= 0 ? sh.getRange(fila, b.c.rep + 1).getValue() : '', repCargo: b.c.repCargo >= 0 ? sh.getRange(fila, b.c.repCargo + 1).getValue() : '' };
   sh.getRange(fila, b.c.estado + 1).setValue(textoEstadoPendiente_(sh, b.c.estado));
   [b.c.rep, b.c.repCargo, b.c.fecha].forEach(c => { if (c >= 0) sh.getRange(fila, c + 1).clearContent(); });
-  registro_([new Date(), fila, nombre, 'Reiniciada por el administrador', '', '', '', 'Hoja']);
+  const esp = espejo_(datosEspejo_(b, fila, nombre, null, 'pendiente', '', '', previo));
+  registro_([new Date(), fila, nombre, 'Reiniciada por el administrador', '', '', '', 'Hoja', esp]);
 }
 function textoEstadoPendiente_(sh, c) { const o = opcionesEstado_(sh, c).find(x => claveEstado_(x) === 'pendiente'); return o || 'Pendiente'; }
+
+// ─────────────────────────── Copia en la planilla original ───────────────────────────
+// Datos del cruce: nombre, cargo e institución del invitado y en qué repetición de ese nombre está
+// (si un nombre figura 2 veces, la 2.ª aparición de esta hoja corresponde a la 2.ª de la original).
+function datosEspejo_(b, fila, nombre, extra, op, rep, repCargo, previo) {
+  const k = norm_(nombre); let ordinal = 0;
+  for (let i = 0; i < fila - 2 && i < b.filas.length; i++) if (norm_(b.filas[i][b.c.nombre]) === k) ordinal++;
+  const f = b.filas[fila - 2] || [];
+  return { nombre, ordinal, op, rep, repCargo, previo: previo || {},
+    cargo: extra ? extra.cargo : (b.c.cargo >= 0 ? f[b.c.cargo] : ''), inst: extra ? extra.inst : (b.c.inst >= 0 ? f[b.c.inst] : '') };
+}
+function textoRep_(rep, cargo) { rep = limpio_(rep); cargo = limpio_(cargo); return rep ? rep + (cargo ? ' (' + cargo + ')' : '') : ''; }
+// Escribe la respuesta en la planilla original. Devuelve un texto para REGISTRO; nunca lanza error.
+function espejo_(d) {
+  try {
+    if (!ORIGINAL.id) return '';
+    const sh = SpreadsheetApp.openById(ORIGINAL.id).getSheetByName(ORIGINAL.hoja);
+    if (!sh) return 'Error: no existe la pestaña «' + ORIGINAL.hoja + '»';
+    const lc = sh.getLastColumn(), lr = sh.getLastRow();
+    const enc = sh.getRange(1, 1, 1, lc).getValues()[0].map(norm_);
+    const col = alias => { for (const a of alias) { const k = enc.indexOf(norm_(a)); if (k >= 0) return k; } return -1; };
+    const c = { nombre: col(COLS.nombre), cargo: col(COLS.cargo), inst: col(COLS.inst), estado: col(COLS.estado), rep: col(['representante designado', 'representante']) };
+    if (c.nombre < 0 || c.estado < 0) return 'Error: no encuentro las columnas de nombre o confirmación';
+    const v = lr > 1 ? sh.getRange(2, 1, lr - 1, lc).getValues() : [];
+    const idx = []; v.forEach((f, i) => { if (norm_(f[c.nombre]) === norm_(d.nombre)) idx.push(i); });
+    if (!idx.length) return 'No encontrado en la planilla original';
+    let i = idx[0];
+    if (idx.length > 1) {
+      const fino = idx.filter(j => (c.cargo < 0 || norm_(v[j][c.cargo]) === norm_(d.cargo)) && (c.inst < 0 || norm_(v[j][c.inst]) === norm_(d.inst)));
+      i = fino.length === 1 ? fino[0] : idx[Math.min(d.ordinal, idx.length - 1)];
+    }
+    const fila = i + 2;
+    const estado = d.op === 'pendiente' ? textoEstadoPendiente_(sh, c.estado) : textoEstado_(sh, c.estado, d.op);
+    sh.getRange(fila, c.estado + 1).setValue(estado);
+    if (c.rep >= 0) {
+      const actual = norm_(v[i][c.rep]);
+      if (d.op === 'representante') sh.getRange(fila, c.rep + 1).setValue(seguro_(textoRep_(d.rep, d.repCargo)));
+      // Solo borra el representante si lo había puesto la app (no toca lo que el equipo escribió a mano).
+      else if (actual && (actual === norm_(textoRep_(d.previo.rep, d.previo.repCargo)) || actual === norm_(d.previo.rep))) sh.getRange(fila, c.rep + 1).clearContent();
+    }
+    return 'OK · fila ' + fila;
+  } catch (e) { return 'Error: ' + String(e && e.message || e).slice(0, 200); }
+}
+// Menú: copia a la planilla original todas las respuestas que llegaron por la app.
+function sincronizarOriginal() {
+  const b = base_(); let ok = 0; const fallas = [];
+  b.filas.forEach((f, i) => {
+    if (b.c.fecha < 0 || !f[b.c.fecha] || !limpio_(f[b.c.nombre])) return;
+    const op = claveEstado_(f[b.c.estado]);
+    if (['confirmado', 'no_asistira', 'representante'].indexOf(op) < 0) return;
+    const r = espejo_(datosEspejo_(b, i + 2, f[b.c.nombre], null, op, b.c.rep >= 0 ? f[b.c.rep] : '', b.c.repCargo >= 0 ? f[b.c.repCargo] : '', {}));
+    if (r.indexOf('OK') === 0) ok++; else fallas.push(limpio_(f[b.c.nombre]) + ': ' + r);
+  });
+  aviso_('Planilla original', 'Copiadas: ' + ok + (fallas.length ? '\n\nSin copiar (' + fallas.length + '):\n' + fallas.join('\n') : ''));
+}
 
 // ─────────────────────────── Fórmulas (hoja en español usa «;») ───────────────────────────
 function sepFormulas_(sh) {

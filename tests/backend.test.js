@@ -40,10 +40,22 @@ const base = hoja('BASE INVITADOS', [
   ['María Laredo Paz', 'Gerente', 'Empresa X', '06. Sector empresarial y productivo', '', '']
 ]);
 const hojas = { 'BASE INVITADOS': base };
+// Planilla original: A vacía, B nombre … I confirmación, J representante designado; nombre repetido.
+const orig = hoja('Lista de Invitados', [
+  ['', 'Nombres y Apelllidos', 'Cargo', 'Institución', 'Categoría', 'Responsable de Contacto', 'Teléfono', 'Invitación enviada', 'Confirmación de Asistencia', 'Representante Designado'],
+  ['', 'Ing. Rolando Lopez Lopez', 'Vicerrector', 'Unifranz', '01', '', '', 'Si', '', ''],
+  ['', 'Luis Fernando Laredo Arellano', 'Diputado Nacional', 'Cámara de Diputados', '02', '', '70733255', 'Si', '', ''],
+  ['', 'Diego Andres Brañez Leaños', 'Diputado Nacional', 'Cámara de Diputados', '02', '', '', 'Si', '', 'Puesto a mano'],
+  ['', 'Saúl Solís', 'Director', 'GAM Cocapata', '03', '', '', '', '', ''],
+  ['', 'María Laredo Paz', 'Gerente', 'Empresa X', '06', '', '', '', '', ''],
+  ['', 'María Laredo Paz', 'Gerente', 'Empresa X', '06', '', '', '', '', '']
+]);
+let originalFalla = false;
 const props = {};
 global.SpreadsheetApp = {
   getActive: () => ({ getSheetByName: n => hojas[n] || null, insertSheet: n => (hojas[n] = hoja(n, [])) }),
   getActiveSheet: () => base, flush() {},
+  openById: id => { if (originalFalla) throw new Error('sin acceso'); assert.strictEqual(id, '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes'); return { getSheetByName: n => n === 'Lista de Invitados' ? orig : null }; },
   DataValidationCriteria: { VALUE_IN_LIST: 'VALUE_IN_LIST' }, CopyPasteType: { PASTE_FORMAT: 1 },
   newConditionalFormatRule() { const o = { whenTextEqualTo: t => (o.t = t, o), setBackground: () => o, setFontColor: () => o, setRanges: () => o, build: () => ({ t: o.t, getRanges: () => [] }) }; return o; },
   getUi() { throw new Error('sin interfaz'); }
@@ -91,6 +103,32 @@ x = responder_({ f: '0', n: '=Pedro Nuevo', op: 'confirmado', nuevo: '1', cargo:
 const fn = base.d.findIndex(f => f[0] === "'=Pedro Nuevo"); assert.ok(fn > 0, 'agrega con apóstrofo'); assert.strictEqual(base.d[fn][3], '99. Registrado desde la app'); assert.strictEqual(base.d[fn][5], 'Confirmado');
 assert.strictEqual(fn, 5, 'se agrega justo después del último invitado');
 assert.strictEqual(hojas.REGISTRO.getLastRow(), 1 + 5, 'REGISTRO con 5 respuestas');
+// ── Copia en la planilla original ──
+assert.strictEqual(orig.d[2][8], 'Confirmado', 'Laredo confirmado en la original (col I)');
+assert.strictEqual(orig.d[3][8], 'No Asistirá', 'Brañez: no asistirá en la original');
+assert.strictEqual(orig.d[3][9], '', 'el representante que puso la app se borra al cambiar a «no asistirá»');
+assert.strictEqual(orig.d[5][8], 'Confirmado', 'María Laredo (1.ª aparición) en la original');
+assert.strictEqual(orig.d[6][8], '', '2.ª aparición intacta');
+assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'No encontrado en la planilla original'), 'nuevo invitado: anotado como no encontrado');
+assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'OK · fila 3'));
+// representante → J; luego confirma → J se borra solo si lo puso la app
+x = responder_({ f: '5', n: 'Saúl Solís', op: 'representante', rep: 'Ana Pérez', rcargo: 'Asesora' }); assert.ok(x.ok);
+assert.strictEqual(orig.d[4][8], 'Enviará representate'); assert.strictEqual(orig.d[4][9], 'Ana Pérez (Asesora)');
+x = responder_({ f: '5', n: 'Saúl Solís', op: 'confirmado' }); assert.ok(x.ok);
+assert.strictEqual(orig.d[4][8], 'Confirmado'); assert.strictEqual(orig.d[4][9], '', 'J borrado porque lo había puesto la app');
+orig.d[4][9] = 'Escrito a mano';
+x = responder_({ f: '5', n: 'Saúl Solís', op: 'confirmado' }); assert.ok(x.ok);
+assert.strictEqual(orig.d[4][9], 'Escrito a mano', 'no borra lo que el equipo escribió a mano');
+// si la planilla original falla, la respuesta igual se guarda
+originalFalla = true;
+x = responder_({ f: '5', n: 'Saúl Solís', op: 'no_asistira' }); assert.ok(x.ok); assert.strictEqual(base.d[3][5], 'No Asistirá');
+assert.ok(hojas.REGISTRO.d[hojas.REGISTRO.getLastRow() - 1][8].startsWith('Error: sin acceso'));
+originalFalla = false;
+// sincronizar desde el menú
+orig.d.slice(1).forEach(f => { f[8] = ''; });
+sincronizarOriginal();
+assert.strictEqual(orig.d[2][8], 'Confirmado'); assert.strictEqual(orig.d[4][8], 'No Asistirá');
+console.log('✔ Copia en la planilla original OK');
 // cerrada
 props.CERRADA = 'SI'; assert.strictEqual(responder_({ f: '2', n: 'Luis Fernando Laredo Arellano', op: 'confirmado' }).codigo, 'cerrada'); delete props.CERRADA;
 console.log('✔ Todas las pruebas del script pasaron (SEP="' + SEP + '")');
