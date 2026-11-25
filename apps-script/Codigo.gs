@@ -26,6 +26,13 @@ const COLS = {
 const EXTRA = { rep: 'Representante', repCargo: 'Cargo del representante', fecha: 'Respondió en la app' };
 const ESTADOS_DEFECTO = ['Pendiente', 'Confirmado', 'No Asistirá', 'Enviará representate', 'No contesta varias veces'];
 
+// Ejecutar UNA vez desde el editor (lista de funciones → autorizar → ▶ Ejecutar) para conceder el permiso
+// de escribir en la planilla original. En la ventana de Google marca TODAS las casillas («Seleccionar todo»).
+function autorizar() {
+  const sh = SpreadsheetApp.openById(ORIGINAL.id).getSheetByName(ORIGINAL.hoja);
+  aviso_('Permiso concedido', 'Listo: el script ya puede escribir en la planilla original (pestaña «' + sh.getName() + '», ' + sh.getLastRow() + ' filas).\n\nNo necesitas hacer nada más.');
+}
+
 // ─────────────────────────── Aplicación web ───────────────────────────
 function doGet(e) {
   const p = (e && e.parameter) || {};
