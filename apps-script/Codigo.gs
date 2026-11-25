@@ -4,7 +4,7 @@
 //  Implementar como aplicación web: Ejecutar como «Yo» · Acceso «Cualquier persona».
 //  Para actualizar: Implementar → Administrar implementaciones → ✏️ → Nueva versión.
 // ════════════════════════════════════════════════════════════════════════════
-const VERSION = '1.2';
+const VERSION = '1.3';
 // Planilla original del equipo (la que manda): cada respuesta se copia ahí al instante y cada 10 minutos esta hoja
 // se actualiza desde ella (nombres nuevos, borrados y estados). Ver «Planilla original» más abajo.
 const ORIGINAL = { id: '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes', hoja: 'Lista de Invitados' };
@@ -133,8 +133,9 @@ function responder_(p) {
     }
     // 2) Escribir estado (exactamente como figura en la lista desplegable), representante y fecha.
     const previo = nuevo ? {} : { rep: b.c.rep >= 0 ? b.filas[fila - 2][b.c.rep] : '', repCargo: b.c.repCargo >= 0 ? b.filas[fila - 2][b.c.repCargo] : '' };
-    const estado = textoEstado_(sh, b.c.estado, op), ahora = new Date();
-    sh.getRange(fila, b.c.estado + 1).setValue(estado);
+    const celdaEstado = sh.getRange(fila, b.c.estado + 1), ahora = new Date();
+    escribirEstadoCelda_(celdaEstado, op, () => reglaColumna_(sh, b.c.estado, b.filas.length));   // repara la lista si hace falta
+    const estado = celdaEstado.getValue();
     if (b.c.rep >= 0) sh.getRange(fila, b.c.rep + 1).setValue(op === 'representante' ? seguro_(rep) : '');
     if (b.c.repCargo >= 0) sh.getRange(fila, b.c.repCargo + 1).setValue(op === 'representante' ? seguro_(repCargo) : '');
     if (b.c.fecha >= 0) sh.getRange(fila, b.c.fecha + 1).setValue(ahora).setNumberFormat('dd/MM/yyyy HH:mm');
@@ -372,11 +373,32 @@ function filaEnOriginal_(o, d) {
 // Regla de validación correcta de la columna de confirmación (la que tiene «Confirmado»), para reparar celdas
 // que tengan copiada otra lista (pasa en la original desde la fila 117).
 function reglaEstado_(o) {
-  if (o.regla !== undefined) return o.regla;
-  o.regla = null;
-  const rs = o.sh.getRange(2, o.c.estado + 1, Math.max(1, Math.min(o.v.length, 400)), 1).getDataValidations();
-  for (const r of rs) { const x = r[0]; if (x && listaDe_(x).some(t => claveEstado_(t) === 'confirmado')) { o.regla = x; break; } }
+  if (o.regla === undefined) o.regla = reglaColumna_(o.sh, o.c.estado, o.v.length);
   return o.regla;
+}
+// Busca en la columna una celda cuya lista tenga «Confirmado» y devuelve esa regla (o una nueva con las opciones de siempre).
+function reglaColumna_(sh, col, n) {
+  const rs = sh.getRange(2, col + 1, Math.max(1, Math.min(n || 1, 600)), 1).getDataValidations();
+  for (const r of rs) { const x = r[0]; if (x && listaDe_(x).some(t => claveEstado_(t) === 'confirmado')) return x; }
+  try { return SpreadsheetApp.newDataValidation().requireValueInList(ESTADOS_DEFECTO, true).setAllowInvalid(false).build(); } catch (e) { return null; }
+}
+// Deja la lista correcta en toda la columna de estado (filas 2..n+1) si alguna celda tiene otra.
+function asegurarListaColumna_(sh, col, n) {
+  if (n < 1) return;
+  const rango = sh.getRange(2, col + 1, n, 1), rs = rango.getDataValidations();
+  if (!rs.some(r => !r[0] || !listaDe_(r[0]).some(t => claveEstado_(t) === 'confirmado'))) return;
+  const buena = reglaColumna_(sh, col, n);
+  if (buena) rango.setDataValidation(buena);
+}
+// Escribe el estado en una celda con la opción exacta de su lista; si la celda trae otra lista, la repara.
+function escribirEstadoCelda_(celda, op, buenaFn) {
+  let ops = listaDe_(celda.getDataValidation() || { getCriteriaType: () => '' });
+  if (ops.length && !ops.some(t => claveEstado_(t) === op)) {
+    const buena = buenaFn();
+    if (buena) { celda.setDataValidation(buena); ops = listaDe_(buena); }
+  }
+  if (!ops.length) ops = ESTADOS_DEFECTO;
+  celda.setValue(ops.find(t => claveEstado_(t) === op) || '');
 }
 function listaDe_(regla) {
   try { if (regla.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) return regla.getCriteriaValues()[0].map(String); } catch (e) {}
@@ -385,14 +407,7 @@ function listaDe_(regla) {
 // Escribe el estado en una fila de la original (con la opción exacta de su lista) y la nota del representante.
 function escribirEstadoOriginal_(o, fila, op, rep, repCargo) {
   const celda = o.sh.getRange(fila, o.c.estado + 1);
-  let ops = listaDe_(celda.getDataValidation() || { getCriteriaType: () => '' });
-  if (ops.length && !ops.some(t => claveEstado_(t) === op)) {               // la celda tiene otra lista: se repara
-    const buena = reglaEstado_(o);
-    if (buena) { celda.setDataValidation(buena); ops = listaDe_(buena); }
-  }
-  if (!ops.length) ops = ESTADOS_DEFECTO;
-  const texto = op === 'pendiente' ? (ops.find(t => claveEstado_(t) === 'pendiente') || '') : (ops.find(t => claveEstado_(t) === op) || '');
-  celda.setValue(texto);
+  escribirEstadoCelda_(celda, op, () => reglaEstado_(o));                    // si la celda trae otra lista, se repara
   const nota = String(celda.getNote() || '');
   if (op === 'representante') celda.setNote(NOTA_REP + textoRep_(rep, repCargo));
   else if (nota.indexOf(NOTA_REP) === 0) celda.setNote('');                 // solo borra la nota que puso la app
@@ -479,13 +494,16 @@ function actualizarDesdeOriginal(e) {
     // Escribir esta hoja solo si algo cambió.
     const antes = JSON.stringify(b.filas.filter(f => limpio_(f[b.c.nombre])).map(f => f.slice(0, W)));
     if (antes !== JSON.stringify(filas) || quitados || agregados) {
-      const total = Math.max(nN, filas.length);
-      if (total) { sh.getRange(2, 1, total, W).clearContent(); sh.getRange(2, b.c.nombre + 1, total, 1).setBackground(null).clearNote(); }
+      // Primero la lista correcta en la columna de estado (si una celda trae otra lista, la escritura fallaría a medias).
+      asegurarListaColumna_(sh, b.c.estado, Math.max(nN, filas.length));
+      // Se sobrescribe encima (nunca se borra todo antes) y solo al final se limpian las filas que sobran.
       if (filas.length) {
         sh.getRange(2, 1, filas.length, W).setValues(filas.map(f => f.map(x => typeof x === 'string' ? seguro_(x) : x)));
         sh.getRange(2, b.c.nombre + 1, filas.length, 1).setNotes(marcas.map(m => [m])).setBackgrounds(amarillos.map(a => [a ? '#fff2cc' : null]));
         if (b.c.fecha >= 0) sh.getRange(2, b.c.fecha + 1, filas.length, 1).setNumberFormat('dd/MM/yyyy HH:mm');
       }
+      const sobran = nN - filas.length;
+      if (sobran > 0) { sh.getRange(filas.length + 2, 1, sobran, W).clearContent(); sh.getRange(filas.length + 2, b.c.nombre + 1, sobran, 1).setBackground(null).clearNote(); }
     }
     SpreadsheetApp.flush();
     pr.setProperty('ULTIMA_ACTUALIZACION', String(inicio));

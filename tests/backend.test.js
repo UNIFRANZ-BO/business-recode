@@ -24,7 +24,7 @@ function hoja(nombre, datos) {
         clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (sh.d[r - 1 + i]) sh.d[r - 1 + i][c - 1 + j] = ''; return rg; },
         getDataValidation: () => regla((sh.listas || {})[r] || OPS),
         getDataValidations: () => Array.from({length: nr}, (_, i) => [regla((sh.listas || {})[r + i] || OPS)]),
-        setDataValidation(x) { (sh.listas = sh.listas || {})[r] = x.lista; return rg; },
+        setDataValidation(x) { for (let i = 0; i < nr; i++) (sh.listas = sh.listas || {})[r + i] = x.lista; return rg; },
         getNotes() { return Array.from({length: nr}, (_, i) => [(sh.notas || {})[(r + i) + ',' + c] || '']); },
         setNotes(a) { a.forEach((x, i) => { (sh.notas = sh.notas || {})[(r + i) + ',' + c] = x[0]; }); return rg; },
         clearNote() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) delete (sh.notas || {})[(r + i) + ',' + (c + j)]; return rg; },
@@ -66,6 +66,7 @@ global.SpreadsheetApp = {
   getActiveSheet: () => base, flush() {},
   openById: id => { if (originalFalla) throw new Error('sin acceso'); assert.strictEqual(id, '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes'); return { getSheetByName: n => n === 'Lista de Invitados' ? orig : null }; },
   DataValidationCriteria: { VALUE_IN_LIST: 'VALUE_IN_LIST' }, CopyPasteType: { PASTE_FORMAT: 1 },
+  newDataValidation() { const o = { requireValueInList: l => (o.l = l, o), setAllowInvalid: () => o, build: () => regla(o.l) }; return o; },
   newConditionalFormatRule() { const o = { whenTextEqualTo: t => (o.t = t, o), setBackground: () => o, setFontColor: () => o, setRanges: () => o, build: () => ({ t: o.t, getRanges: () => [] }) }; return o; },
   getUi() { throw new Error('sin interfaz'); }
 };
@@ -145,12 +146,18 @@ console.log('✔ Copia en la planilla original OK');
 // ── Actualización desde la original (la que manda) ──
 const nombres = () => base.d.slice(1).filter(f => f[0]).map(f => String(f[0]));
 const filaBase = n => base.d.find(f => String(f[0]) === n);
+// Caso real del 25-nov: una celda de la hoja de la app trae la lista equivocada → la respuesta debe guardarse igual
+(base.listas = base.listas || {})[5] = INVIT;
+x = responder_({ f: '5', n: 'María Laredo Paz', op: 'confirmado' }); assert.ok(x.ok, JSON.stringify(x));
+assert.strictEqual(base.d[4][5], 'Confirmado'); assert.deepStrictEqual(base.listas[5], OPS, 'celda de la app reparada');
+base.listas[4] = INVIT;                       // y la actualización repara la columna antes de escribir
 // 1.ª actualización: Saúl respondió «no asistirá» en la app cuando la original falló → la app gana y se copia allá
 let res = actualizarDesdeOriginal(true);
 assert.ok(res.startsWith('Invitados: 7'), res);
 assert.strictEqual(orig.d[4][8], 'No Asistirá', 'respuesta reciente de la app copiada a la original');
 assert.deepStrictEqual(nombres(), ['Ing. Rolando Lopez Lopez', 'Luis Fernando Laredo Arellano', 'Diego Andres Brañez Leaños', 'Saúl Solís', 'María Laredo Paz', 'María Laredo Paz', "'=Pedro Nuevo"], 'mismo orden que la original');
 assert.strictEqual(filaBase('Ing. Rolando Lopez Lopez')[3], '01', 'trae categoría');
+assert.deepStrictEqual(base.listas[4], OPS, 'la actualización reparó la lista de la columna F');
 assert.strictEqual(filaBase('Luis Fernando Laredo Arellano')[5], 'Confirmado');
 assert.ok(filaBase('Luis Fernando Laredo Arellano')[8] instanceof Date, 'conserva la fecha de respuesta');
 assert.strictEqual(base.getRange(8, 1).getNote(), MARCA_ORIGINAL, 'Pedro sigue marcado');
