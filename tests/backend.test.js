@@ -2,6 +2,8 @@
 const fs = require('fs'), path = require('path'), assert = require('assert');
 const OPS = ['Pendiente', 'Confirmado', 'No Asistirá', 'Enviará representate', 'No contesta varias veces'];
 const SEP = process.env.SEP || ';';
+const INVIT = ['Pendiente', 'Enviada Digital', 'Entregada Físico', 'Reenviar', 'No entregada', 'Autoregistro'];   // lista equivocada (pasa en la original)
+const regla = lista => ({ lista, getCriteriaType: () => 'VALUE_IN_LIST', getCriteriaValues: () => [lista] });
 function hoja(nombre, datos) {
   const sh = {
     d: datos, nombre, reglas: [], fondo: {}, val: {},
@@ -20,7 +22,13 @@ function hoja(nombre, datos) {
         setValue(x) { fil(r); sh.d[r - 1][c - 1] = x; return rg; },
         setFormula(f) { fil(r); sh.d[r - 1][c - 1] = f === '=SUM(2' + SEP + '5)' ? 7 : f; if (/^=/.test(f) && f !== '=SUM(2,5)' && f !== '=SUM(2;5)') sh.formulas = (sh.formulas || []).concat(f); return rg; },
         clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (sh.d[r - 1 + i]) sh.d[r - 1 + i][c - 1 + j] = ''; return rg; },
-        getDataValidation: () => ({ getCriteriaType: () => 'VALUE_IN_LIST', getCriteriaValues: () => [OPS] }),
+        getDataValidation: () => regla((sh.listas || {})[r] || OPS),
+        getDataValidations: () => Array.from({length: nr}, (_, i) => [regla((sh.listas || {})[r + i] || OPS)]),
+        setDataValidation(x) { (sh.listas = sh.listas || {})[r] = x.lista; return rg; },
+        getNotes() { return Array.from({length: nr}, (_, i) => [(sh.notas || {})[(r + i) + ',' + c] || '']); },
+        setNotes(a) { a.forEach((x, i) => { (sh.notas = sh.notas || {})[(r + i) + ',' + c] = x[0]; }); return rg; },
+        clearNote() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) delete (sh.notas || {})[(r + i) + ',' + (c + j)]; return rg; },
+        setBackgrounds() { return rg; },
         copyTo() {}, setBackground(b) { sh.fondo[r + ',' + c] = b; return rg; },
         getNote() { return (sh.notas || {})[r + ',' + c] || ''; }, setNote(t) { (sh.notas = sh.notas || {})[r + ',' + c] = t; return rg; }
       };
@@ -62,7 +70,10 @@ global.SpreadsheetApp = {
   getUi() { throw new Error('sin interfaz'); }
 };
 global.PropertiesService = { getScriptProperties: () => ({ getProperty: k => props[k] ?? null, setProperty: (k, v) => props[k] = v, deleteProperty: k => delete props[k] }) };
-global.LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
+global.LockService = { getScriptLock: () => ({ waitLock() {}, tryLock: () => true, releaseLock() {} }) };
+const activadores = [];
+global.ScriptApp = { getProjectTriggers: () => activadores, deleteTrigger() {},
+  newTrigger: h => { const t = { h, timeBased: () => t, everyMinutes: m => (t.m = m, t), create: () => (activadores.push(t), t) }; return t; } };
 global.Utilities = { formatDate: d => d.toISOString() };
 global.ContentService = { createTextOutput: t => ({ t, setMimeType() { return this; } }), MimeType: { JSON: 1, JAVASCRIPT: 2 } };
 global.Logger = { log() {} };
@@ -111,7 +122,9 @@ assert.strictEqual(orig.d[3][9], 'Puesto a mano', 'la columna J (responsable de 
 assert.strictEqual(orig.getRange(4, 9).getNote(), '', 'la nota de representante se borra al cambiar a «no asistirá»');
 assert.strictEqual(orig.d[5][8], 'Confirmado', 'María Laredo (1.ª aparición) en la original');
 assert.strictEqual(orig.d[6][8], '', '2.ª aparición intacta');
-assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'No encontrado en la planilla original'), 'nuevo invitado: anotado como no encontrado');
+assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'Agregado a la original · fila 8'), 'nuevo invitado: agregado a la original');
+assert.strictEqual(orig.d[7][1], "'=Pedro Nuevo"); assert.strictEqual(orig.d[7][4], '99. Registrado desde la app'); assert.strictEqual(orig.d[7][8], 'Confirmado');
+assert.ok(!orig.d[7][5], 'no toca «Responsable de Contacto»'); assert.strictEqual(base.getRange(fn + 1, 1).getNote(), MARCA_ORIGINAL, 'marcado como ya copiado');
 assert.ok(hojas.REGISTRO.d.some(f => f[8] === 'OK · fila 3'));
 // representante → J; luego confirma → J se borra solo si lo puso la app
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'representante', rep: 'Ana Pérez', rcargo: 'Asesora' }); assert.ok(x.ok);
@@ -127,11 +140,48 @@ originalFalla = true;
 x = responder_({ f: '5', n: 'Saúl Solís', op: 'no_asistira' }); assert.ok(x.ok); assert.strictEqual(base.d[3][5], 'No Asistirá');
 assert.ok(hojas.REGISTRO.d[hojas.REGISTRO.getLastRow() - 1][8].startsWith('Error: sin acceso'));
 originalFalla = false;
-// sincronizar desde el menú
-orig.d.slice(1).forEach(f => { f[8] = ''; });
-sincronizarOriginal();
-assert.strictEqual(orig.d[2][8], 'Confirmado'); assert.strictEqual(orig.d[4][8], 'No Asistirá');
 console.log('✔ Copia en la planilla original OK');
+
+// ── Actualización desde la original (la que manda) ──
+const nombres = () => base.d.slice(1).filter(f => f[0]).map(f => String(f[0]));
+const filaBase = n => base.d.find(f => String(f[0]) === n);
+// 1.ª actualización: Saúl respondió «no asistirá» en la app cuando la original falló → la app gana y se copia allá
+let res = actualizarDesdeOriginal(true);
+assert.ok(res.startsWith('Invitados: 7'), res);
+assert.strictEqual(orig.d[4][8], 'No Asistirá', 'respuesta reciente de la app copiada a la original');
+assert.deepStrictEqual(nombres(), ['Ing. Rolando Lopez Lopez', 'Luis Fernando Laredo Arellano', 'Diego Andres Brañez Leaños', 'Saúl Solís', 'María Laredo Paz', 'María Laredo Paz', "'=Pedro Nuevo"], 'mismo orden que la original');
+assert.strictEqual(filaBase('Ing. Rolando Lopez Lopez')[3], '01', 'trae categoría');
+assert.strictEqual(filaBase('Luis Fernando Laredo Arellano')[5], 'Confirmado');
+assert.ok(filaBase('Luis Fernando Laredo Arellano')[8] instanceof Date, 'conserva la fecha de respuesta');
+assert.strictEqual(base.getRange(8, 1).getNote(), MARCA_ORIGINAL, 'Pedro sigue marcado');
+// El equipo cambia la original: marca a Luis «No contesta», borra a Diego y agrega a alguien (con la lista equivocada en I)
+orig.d[2][8] = 'No contesta varias veces';
+orig.d.splice(3, 1);
+orig.d.push(['135', 'Nuevo Invitado Equis', 'Gerente', 'ACME', '06', '', '777', 'Si', '', '']);
+(orig.listas = orig.listas || {})[orig.d.length] = INVIT;
+res = actualizarDesdeOriginal(true);
+assert.ok(res.includes('nuevos: 1') && res.includes('quitados: 1'), res);
+assert.ok(!nombres().includes('Diego Andres Brañez Leaños'), 'Diego quitado');
+assert.ok(nombres().includes('Nuevo Invitado Equis'), 'nuevo agregado');
+assert.strictEqual(filaBase('Luis Fernando Laredo Arellano')[5], 'No contesta varias veces', 'estado traído de la original');
+assert.strictEqual(buscar_('equis').resultados.length, 1, 'el nuevo aparece en el buscador');
+// El nuevo confirma: la celda I de la original tenía la lista equivocada → se repara y se escribe
+const fNuevo = buscar_('equis').resultados[0].f;
+x = responder_({ f: String(fNuevo), n: 'Nuevo Invitado Equis', op: 'confirmado' }); assert.ok(x.ok);
+const fo = orig.d.findIndex(f => f[1] === 'Nuevo Invitado Equis') + 1;
+assert.strictEqual(orig.d[fo - 1][8], 'Confirmado'); assert.deepStrictEqual(orig.listas[fo], OPS, 'lista de la celda reparada');
+assert.strictEqual(orig.d[fo - 1][0], '135', 'no toca la numeración');
+// Carrera: responde en la app, la original falla, y luego corre la actualización → gana la app
+originalFalla = true; x = responder_({ f: '3', n: 'Luis Fernando Laredo Arellano', op: 'representante', rep: 'Beto Paz' }); assert.ok(x.ok); originalFalla = false;
+res = actualizarDesdeOriginal(true);
+assert.strictEqual(orig.d[2][8], 'Enviará representate'); assert.strictEqual(orig.getRange(3, 9).getNote(), 'Representante (vía app): Beto Paz');
+assert.strictEqual(filaBase('Luis Fernando Laredo Arellano')[6], 'Beto Paz');
+// Sin cambios: no reescribe
+res = actualizarDesdeOriginal(true); assert.ok(res.includes('nuevos: 0 · quitados: 0 · estados traídos de la original: 0 · respuestas copiadas a la original: 0'), res);
+// Activador
+activarActualizacion(); assert.strictEqual(activadores.length, 1); assert.strictEqual(activadores[0].m, 10); assert.strictEqual(activadores[0].h, 'actualizarDesdeOriginal');
+assert.ok(hojas.REGISTRO.d.some(f => f[2] === 'Actualización desde la planilla original'));
+console.log('✔ Actualización desde la original OK');
 // cerrada
 props.CERRADA = 'SI'; assert.strictEqual(responder_({ f: '2', n: 'Luis Fernando Laredo Arellano', op: 'confirmado' }).codigo, 'cerrada'); delete props.CERRADA;
 console.log('✔ Todas las pruebas del script pasaron (SEP="' + SEP + '")');

@@ -4,11 +4,13 @@
 //  Implementar como aplicación web: Ejecutar como «Yo» · Acceso «Cualquier persona».
 //  Para actualizar: Implementar → Administrar implementaciones → ✏️ → Nueva versión.
 // ════════════════════════════════════════════════════════════════════════════
-const VERSION = '1.1';
-// Planilla original del equipo: cada respuesta se copia también ahí (columnas «Confirmación de Asistencia» y
-// «Representante Designado»), cruzando por nombre. Si falla, la respuesta igual queda guardada en esta hoja.
+const VERSION = '1.2';
+// Planilla original del equipo (la que manda): cada respuesta se copia ahí al instante y cada 10 minutos esta hoja
+// se actualiza desde ella (nombres nuevos, borrados y estados). Ver «Planilla original» más abajo.
 const ORIGINAL = { id: '1Nh9ecHGAW7B4HxX6hllduHJahHAwtoH7VHgJMnYbjes', hoja: 'Lista de Invitados' };
 const NOTA_REP = 'Representante (vía app): ';
+const MARCA_ORIGINAL = 'Ya está en la planilla original';   // nota en el nombre de quien se registró solo
+const MINUTOS_ACTUALIZACION = 10;                           // cada cuánto esta hoja se pone igual a la original
 const HOJA_BASE = 'BASE INVITADOS';           // si cambias el nombre de la pestaña, cámbialo aquí
 const H = { RESUMEN: 'RESUMEN', REGISTRO: 'REGISTRO' };
 const MAX_NUEVOS = 60;                        // tope de personas que se registran solas («No encuentro mi nombre»)
@@ -141,7 +143,8 @@ function responder_(p) {
   } finally { lock.releaseLock(); }
   // 3) Fuera del candado: copia en la planilla original y REGISTRO (si la original demora, no frena a nadie).
   const h = hecho;
-  const esp = espejo_(datosEspejo_(h.b, h.fila, nombre, h.nuevo ? { cargo: p.cargo, inst: p.inst } : null, op, rep, repCargo, h.previo));
+  const esp = espejo_(datosEspejo_(h.b, h.fila, nombre, h.nuevo ? { cargo: p.cargo, inst: p.inst, tel: p.tel } : null, op, rep, repCargo, h.previo));
+  if (h.nuevo && esp.indexOf('Agregado') === 0) try { h.b.sh.getRange(h.fila, h.b.c.nombre + 1).setNote(MARCA_ORIGINAL); } catch (e) {}
   try { registro_([h.ahora, h.fila, seguro_(nombre), h.estado, op === 'representante' ? seguro_(rep) : '', op === 'representante' ? seguro_(repCargo) : '', h.nuevo ? 'Sí' : '', limpio_(p.disp).slice(0, 20), esp]); } catch (e) {}
   return { ok: true, estado: op, nuevo: h.nuevo, fecha: Utilities.formatDate(h.ahora, 'America/La_Paz', 'dd/MM/yyyy HH:mm') };
 }
@@ -221,7 +224,7 @@ function onOpen() {
       .addSeparator()
       .addItem('Reiniciar la respuesta de la fila seleccionada', 'reiniciarFila')
       .addItem('Reconstruir RESUMEN', 'reconstruirResumen')
-      .addItem('Copiar respuestas a la planilla original', 'sincronizarOriginal')
+      .addItem('Actualizar desde la planilla original ahora', 'actualizarDesdeOriginal')
       .addToUi();
   } catch (e) {}
 }
@@ -333,60 +336,178 @@ function reiniciarFila() {
 }
 function textoEstadoPendiente_(sh, c) { const o = opcionesEstado_(sh, c).find(x => claveEstado_(x) === 'pendiente'); return o || 'Pendiente'; }
 
-// ─────────────────────────── Copia en la planilla original ───────────────────────────
+// ─────────────────────────── Planilla original (es la que manda) ───────────────────────────
+// La original es la base del equipo. Cada respuesta se escribe ahí al instante (columna «Confirmación de Asistencia»,
+// representante como nota) y cada 10 minutos esta hoja se pone igual a la original (nombres nuevos, borrados, estados).
+// Ojo: en la original, «Representante Designado» (J) es el responsable de Unifranz (lista desplegable): NO se toca.
+function original_() {
+  const sh = SpreadsheetApp.openById(ORIGINAL.id).getSheetByName(ORIGINAL.hoja);
+  if (!sh) throw new Error('No existe la pestaña «' + ORIGINAL.hoja + '» en la planilla original');
+  const lc = sh.getLastColumn(), lr = sh.getLastRow();
+  const enc = sh.getRange(1, 1, 1, lc).getValues()[0].map(norm_);
+  const col = alias => { for (const a of alias) { const k = enc.indexOf(norm_(a)); if (k >= 0) return k; } return -1; };
+  const c = { num: enc[0] === '' ? 0 : -1, nombre: col(COLS.nombre), cargo: col(COLS.cargo), inst: col(COLS.inst), cat: col(COLS.cat), tel: col(COLS.tel), estado: col(COLS.estado) };
+  if (c.nombre < 0 || c.estado < 0) throw new Error('No encuentro las columnas de nombre o confirmación en la original');
+  const v = lr > 1 ? sh.getRange(2, 1, lr - 1, lc).getValues() : [];
+  return { sh, c, v };
+}
 // Datos del cruce: nombre, cargo e institución del invitado y en qué repetición de ese nombre está
 // (si un nombre figura 2 veces, la 2.ª aparición de esta hoja corresponde a la 2.ª de la original).
 function datosEspejo_(b, fila, nombre, extra, op, rep, repCargo, previo) {
   const k = norm_(nombre); let ordinal = 0;
   for (let i = 0; i < fila - 2 && i < b.filas.length; i++) if (norm_(b.filas[i][b.c.nombre]) === k) ordinal++;
   const f = b.filas[fila - 2] || [];
-  return { nombre, ordinal, op, rep, repCargo, previo: previo || {},
-    cargo: extra ? extra.cargo : (b.c.cargo >= 0 ? f[b.c.cargo] : ''), inst: extra ? extra.inst : (b.c.inst >= 0 ? f[b.c.inst] : '') };
+  return { nombre, ordinal, op, rep, repCargo, previo: previo || {}, nuevo: !!extra,
+    cargo: extra ? extra.cargo : (b.c.cargo >= 0 ? f[b.c.cargo] : ''), inst: extra ? extra.inst : (b.c.inst >= 0 ? f[b.c.inst] : ''),
+    tel: extra ? extra.tel : '' };
 }
 function textoRep_(rep, cargo) { rep = limpio_(rep); cargo = limpio_(cargo); return rep ? rep + (cargo ? ' (' + cargo + ')' : '') : ''; }
-// Escribe la respuesta en la planilla original. Devuelve un texto para REGISTRO; nunca lanza error.
+function filaEnOriginal_(o, d) {
+  const idx = []; o.v.forEach((f, i) => { if (norm_(f[o.c.nombre]) === norm_(d.nombre)) idx.push(i); });
+  if (!idx.length) return -1;
+  if (idx.length === 1) return idx[0];
+  const fino = idx.filter(j => (o.c.cargo < 0 || norm_(o.v[j][o.c.cargo]) === norm_(d.cargo)) && (o.c.inst < 0 || norm_(o.v[j][o.c.inst]) === norm_(d.inst)));
+  return fino.length === 1 ? fino[0] : idx[Math.min(d.ordinal || 0, idx.length - 1)];
+}
+// Regla de validación correcta de la columna de confirmación (la que tiene «Confirmado»), para reparar celdas
+// que tengan copiada otra lista (pasa en la original desde la fila 117).
+function reglaEstado_(o) {
+  if (o.regla !== undefined) return o.regla;
+  o.regla = null;
+  const rs = o.sh.getRange(2, o.c.estado + 1, Math.max(1, Math.min(o.v.length, 400)), 1).getDataValidations();
+  for (const r of rs) { const x = r[0]; if (x && listaDe_(x).some(t => claveEstado_(t) === 'confirmado')) { o.regla = x; break; } }
+  return o.regla;
+}
+function listaDe_(regla) {
+  try { if (regla.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) return regla.getCriteriaValues()[0].map(String); } catch (e) {}
+  return [];
+}
+// Escribe el estado en una fila de la original (con la opción exacta de su lista) y la nota del representante.
+function escribirEstadoOriginal_(o, fila, op, rep, repCargo) {
+  const celda = o.sh.getRange(fila, o.c.estado + 1);
+  let ops = listaDe_(celda.getDataValidation() || { getCriteriaType: () => '' });
+  if (ops.length && !ops.some(t => claveEstado_(t) === op)) {               // la celda tiene otra lista: se repara
+    const buena = reglaEstado_(o);
+    if (buena) { celda.setDataValidation(buena); ops = listaDe_(buena); }
+  }
+  if (!ops.length) ops = ESTADOS_DEFECTO;
+  const texto = op === 'pendiente' ? (ops.find(t => claveEstado_(t) === 'pendiente') || '') : (ops.find(t => claveEstado_(t) === op) || '');
+  celda.setValue(texto);
+  const nota = String(celda.getNote() || '');
+  if (op === 'representante') celda.setNote(NOTA_REP + textoRep_(rep, repCargo));
+  else if (nota.indexOf(NOTA_REP) === 0) celda.setNote('');                 // solo borra la nota que puso la app
+}
+// Agrega a la original a alguien que se registró solo en la app. Devuelve la fila.
+function agregarAOriginal_(o, d) {
+  let ult = 1; for (let i = o.v.length - 1; i >= 0; i--) if (limpio_(o.v[i][o.c.nombre])) { ult = i + 2; break; }
+  const fila = ult + 1;
+  const pon = (col, val) => { if (col >= 0 && limpio_(val)) o.sh.getRange(fila, col + 1).setValue(seguro_(limpio_(val))); };
+  if (o.c.num >= 0 && ult >= 2) { const n = parseInt(o.v[ult - 2][o.c.num], 10); if (n > 0) o.sh.getRange(fila, o.c.num + 1).setValue(n + 1); }
+  pon(o.c.nombre, d.nombre); pon(o.c.cargo, d.cargo); pon(o.c.inst, d.inst); pon(o.c.cat, CAT_NUEVO); pon(o.c.tel, d.tel);
+  o.sh.getRange(fila, o.c.nombre + 1).setBackground('#fff2cc');
+  const vacia = new Array(o.v[0] ? o.v[0].length : o.sh.getLastColumn()).fill('');
+  vacia[o.c.nombre] = d.nombre; o.v[fila - 2] = vacia;
+  return fila;
+}
+// Copia una respuesta en la original. Devuelve un texto para REGISTRO; nunca lanza error.
 function espejo_(d) {
   try {
     if (!ORIGINAL.id) return '';
-    const sh = SpreadsheetApp.openById(ORIGINAL.id).getSheetByName(ORIGINAL.hoja);
-    if (!sh) return 'Error: no existe la pestaña «' + ORIGINAL.hoja + '»';
-    const lc = sh.getLastColumn(), lr = sh.getLastRow();
-    const enc = sh.getRange(1, 1, 1, lc).getValues()[0].map(norm_);
-    const col = alias => { for (const a of alias) { const k = enc.indexOf(norm_(a)); if (k >= 0) return k; } return -1; };
-    // Ojo: en la original, «Representante Designado» (J) es el responsable de Unifranz (lista desplegable): NO se toca.
-    const c = { nombre: col(COLS.nombre), cargo: col(COLS.cargo), inst: col(COLS.inst), estado: col(COLS.estado) };
-    if (c.nombre < 0 || c.estado < 0) return 'Error: no encuentro las columnas de nombre o confirmación';
-    const v = lr > 1 ? sh.getRange(2, 1, lr - 1, lc).getValues() : [];
-    const idx = []; v.forEach((f, i) => { if (norm_(f[c.nombre]) === norm_(d.nombre)) idx.push(i); });
-    if (!idx.length) return 'No encontrado en la planilla original';
-    let i = idx[0];
-    if (idx.length > 1) {
-      const fino = idx.filter(j => (c.cargo < 0 || norm_(v[j][c.cargo]) === norm_(d.cargo)) && (c.inst < 0 || norm_(v[j][c.inst]) === norm_(d.inst)));
-      i = fino.length === 1 ? fino[0] : idx[Math.min(d.ordinal, idx.length - 1)];
-    }
-    const fila = i + 2;
-    const estado = d.op === 'pendiente' ? textoEstadoPendiente_(sh, c.estado) : textoEstado_(sh, c.estado, d.op);
-    const celda = sh.getRange(fila, c.estado + 1);
-    celda.setValue(estado);
-    // El representante del invitado va como NOTA en la celda de confirmación (no hay columna libre para eso).
-    const nota = String(celda.getNote() || '');
-    if (d.op === 'representante') celda.setNote(NOTA_REP + textoRep_(d.rep, d.repCargo));
-    else if (nota.indexOf(NOTA_REP) === 0) celda.setNote('');           // solo borra la nota que puso la app
-    SpreadsheetApp.flush();                                             // si la hoja rechaza algo, se captura aquí
-    return 'OK · fila ' + fila;
+    const o = original_();
+    const i = filaEnOriginal_(o, d);
+    let fila, agregado = false;
+    if (i >= 0) fila = i + 2;
+    else if (d.nuevo) { fila = agregarAOriginal_(o, d); agregado = true; }
+    else return 'No encontrado en la planilla original';
+    escribirEstadoOriginal_(o, fila, d.op, d.rep, d.repCargo);
+    SpreadsheetApp.flush();                                                  // si la hoja rechaza algo, se captura aquí
+    return (agregado ? 'Agregado a la original · fila ' : 'OK · fila ') + fila;
   } catch (e) { return 'Error: ' + String(e && e.message || e).slice(0, 200); }
 }
-// Menú: copia a la planilla original todas las respuestas que llegaron por la app.
-function sincronizarOriginal() {
-  const b = base_(); let ok = 0; const fallas = [];
-  b.filas.forEach((f, i) => {
-    if (b.c.fecha < 0 || !f[b.c.fecha] || !limpio_(f[b.c.nombre])) return;
-    const op = claveEstado_(f[b.c.estado]);
-    if (['confirmado', 'no_asistira', 'representante'].indexOf(op) < 0) return;
-    const r = espejo_(datosEspejo_(b, i + 2, f[b.c.nombre], null, op, b.c.rep >= 0 ? f[b.c.rep] : '', b.c.repCargo >= 0 ? f[b.c.repCargo] : '', {}));
-    if (r.indexOf('OK') === 0) ok++; else fallas.push(limpio_(f[b.c.nombre]) + ': ' + r);
-  });
-  aviso_('Planilla original', 'Copiadas: ' + ok + (fallas.length ? '\n\nSin copiar (' + fallas.length + '):\n' + fallas.join('\n') : ''));
+
+// Pone esta hoja igual a la original. La llama el activador cada 10 minutos y el menú.
+// · Nombres nuevos en la original → se agregan aquí. · Borrados en la original → se quitan de aquí.
+// · Estado: manda la original, salvo respuestas de la app más nuevas que la última actualización (esas se copian allá).
+function actualizarDesdeOriginal(e) {
+  const manual = !(e && typeof e === 'object') && e !== true;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(60000)) { if (manual) aviso_('Ocupado', 'Hay respuestas guardándose. Intenta en un minuto.'); return 'ocupado'; }
+  let res;
+  try {
+    const pr = PropertiesService.getScriptProperties(), ultima = +(pr.getProperty('ULTIMA_ACTUALIZACION') || 0), inicio = Date.now();
+    const o = original_(), b = base_(), sh = b.sh, W = sh.getLastColumn();
+    const opsApp = opcionesEstado_(sh, b.c.estado), textoApp = k => opsApp.find(t => claveEstado_(t) === k) || '';
+    const nN = b.filas.length, notas = nN ? sh.getRange(2, b.c.nombre + 1, nN, 1).getNotes().map(r => r[0]) : [];
+    const porNombre = {}; b.filas.forEach((f, i) => { const k = norm_(f[b.c.nombre]); if (k) (porNombre[k] = porNombre[k] || []).push(i); });
+    const vistos = {}, usados = {}, filas = [], marcas = [], amarillos = [], aOriginal = [];
+    let agregados = 0, cambios = 0;
+    o.v.forEach((f, j) => {
+      const k = norm_(f[o.c.nombre]); if (!k) return;
+      const n = vistos[k] = (vistos[k] || 0) + 1, ia = (porNombre[k] || [])[n - 1];
+      const prev = ia !== undefined ? b.filas[ia] : null;
+      if (prev) usados[ia] = true; else agregados++;
+      const fila = prev ? prev.slice(0, W) : new Array(W).fill('');
+      while (fila.length < W) fila.push('');
+      const pon = (cApp, cOrig) => { if (cApp >= 0 && cOrig >= 0) fila[cApp] = f[cOrig]; };
+      pon(b.c.nombre, o.c.nombre); pon(b.c.cargo, o.c.cargo); pon(b.c.inst, o.c.inst); pon(b.c.cat, o.c.cat); pon(b.c.tel, o.c.tel);
+      const opOrig = claveEstado_(f[o.c.estado]), opApp = prev ? claveEstado_(prev[b.c.estado]) : 'pendiente';
+      const fecha = prev && b.c.fecha >= 0 ? prev[b.c.fecha] : '';
+      const appReciente = fecha instanceof Date && fecha.getTime() > ultima && ['confirmado', 'no_asistira', 'representante'].indexOf(opApp) >= 0;
+      if (appReciente && opApp !== opOrig) {
+        aOriginal.push({ fila: j + 2, op: opApp, rep: prev[b.c.rep], repCargo: b.c.repCargo >= 0 ? prev[b.c.repCargo] : '' });
+      } else {
+        const t = limpio_(f[o.c.estado]) ? textoApp(opOrig) : '';
+        if (prev && t !== String(prev[b.c.estado])) cambios++;
+        fila[b.c.estado] = t;
+        if (opOrig !== 'representante' && opOrig !== opApp) { if (b.c.rep >= 0) fila[b.c.rep] = ''; if (b.c.repCargo >= 0) fila[b.c.repCargo] = ''; }
+      }
+      filas.push(fila); marcas.push(prev ? notas[ia] || '' : ''); amarillos.push(limpio_(fila[b.c.cat]) === CAT_NUEVO);
+    });
+    // Filas que solo están en esta hoja: los registrados solos que aún no pasaron a la original se agregan allá;
+    // el resto (borrados en la original) se quitan.
+    let quitados = 0;
+    b.filas.forEach((f, i) => {
+      if (usados[i] || !limpio_(f[b.c.nombre])) return;
+      if (limpio_(f[b.c.cat]) === CAT_NUEVO && notas[i] !== MARCA_ORIGINAL) {
+        const op = claveEstado_(f[b.c.estado]);
+        const fo = agregarAOriginal_(o, { nombre: limpio_(f[b.c.nombre]), cargo: f[b.c.cargo], inst: f[b.c.inst], tel: b.c.tel >= 0 ? f[b.c.tel] : '' });
+        if (op !== 'pendiente') aOriginal.push({ fila: fo, op, rep: f[b.c.rep], repCargo: b.c.repCargo >= 0 ? f[b.c.repCargo] : '' });
+        filas.push(f.slice(0, W)); marcas.push(MARCA_ORIGINAL); amarillos.push(true);
+      } else quitados++;
+    });
+    aOriginal.forEach(x => escribirEstadoOriginal_(o, x.fila, x.op, x.rep, x.repCargo));
+    // Escribir esta hoja solo si algo cambió.
+    const antes = JSON.stringify(b.filas.filter(f => limpio_(f[b.c.nombre])).map(f => f.slice(0, W)));
+    if (antes !== JSON.stringify(filas) || quitados || agregados) {
+      const total = Math.max(nN, filas.length);
+      if (total) { sh.getRange(2, 1, total, W).clearContent(); sh.getRange(2, b.c.nombre + 1, total, 1).setBackground(null).clearNote(); }
+      if (filas.length) {
+        sh.getRange(2, 1, filas.length, W).setValues(filas.map(f => f.map(x => typeof x === 'string' ? seguro_(x) : x)));
+        sh.getRange(2, b.c.nombre + 1, filas.length, 1).setNotes(marcas.map(m => [m])).setBackgrounds(amarillos.map(a => [a ? '#fff2cc' : null]));
+        if (b.c.fecha >= 0) sh.getRange(2, b.c.fecha + 1, filas.length, 1).setNumberFormat('dd/MM/yyyy HH:mm');
+      }
+    }
+    SpreadsheetApp.flush();
+    pr.setProperty('ULTIMA_ACTUALIZACION', String(inicio));
+    // Si aparecieron categorías nuevas, rehacer RESUMEN.
+    const cats = x => JSON.stringify([...new Set(x.map(f => limpio_(f[b.c.cat])).filter(Boolean))].sort());
+    if (b.c.cat >= 0 && cats(b.filas) !== cats(filas)) reconstruirResumen(true);
+    res = 'Invitados: ' + filas.length + ' · nuevos: ' + agregados + ' · quitados: ' + quitados + ' · estados traídos de la original: ' + cambios + ' · respuestas copiadas a la original: ' + aOriginal.length;
+    if (agregados || quitados || cambios || aOriginal.length) registro_([new Date(), '', 'Actualización desde la planilla original', '', '', '', '', manual ? 'Menú' : 'Automática', res]);
+  } catch (err) {
+    res = 'Error: ' + String(err && err.message || err).slice(0, 300);
+    try { registro_([new Date(), '', 'Actualización desde la planilla original', '', '', '', '', manual ? 'Menú' : 'Automática', res]); } catch (e2) {}
+  } finally { lock.releaseLock(); }
+  if (manual) aviso_('Actualizado desde la planilla original', res);
+  return res;
+}
+// Ejecutar UNA vez desde el editor: crea el activador de cada 10 minutos y hace la primera actualización.
+// Google pedirá permiso para «ejecutar cuando no estás presente»: marca «Seleccionar todo».
+function activarActualizacion() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'actualizarDesdeOriginal').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('actualizarDesdeOriginal').timeBased().everyMinutes(MINUTOS_ACTUALIZACION).create();
+  const r = actualizarDesdeOriginal(true);
+  aviso_('Actualización automática activada', 'Cada ' + MINUTOS_ACTUALIZACION + ' minutos esta hoja se pone igual a la planilla original.\n\nPrimera actualización:\n' + r);
 }
 
 // ─────────────────────────── Fórmulas (hoja en español usa «;») ───────────────────────────
